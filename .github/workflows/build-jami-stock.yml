@@ -180,7 +180,7 @@ jobs:
       #    hashes make them awkward for `patch -p1` — sed is more robust
       #    and trivially auditable here).
       # ---------------------------------------------------------------
-      - name: Patch: downgrade Gradle wrapper to 9.3.1 stable
+      - name: "Patch: downgrade Gradle wrapper to 9.3.1 stable"
         working-directory: jami-client-android
         run: |
           PROP=jami-android/gradle/wrapper/gradle-wrapper.properties
@@ -195,7 +195,7 @@ jobs:
             exit 1
           fi
 
-      - name: Patch: add -module JamiService to make-swig.sh
+      - name: "Patch: add -module JamiService to make-swig.sh"
         working-directory: jami-client-android
         run: |
           SCRIPT=daemon/bin/jni/make-swig.sh
