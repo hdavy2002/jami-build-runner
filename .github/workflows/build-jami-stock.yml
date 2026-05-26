@@ -1,0 +1,270 @@
+# .github/workflows/build-jami-stock.yml
+#
+# Builds the stock Jami Android debug APK on a GitHub Actions Linux runner.
+# Applies three local patches that work around upstream issues as of
+# Jami 4.0.0-4623 (commit d0498a2, dated 2026-05).
+#
+# Triggers:
+#   - manual: Actions tab → "Build stock Jami Android APK" → Run workflow
+#   - push to main: re-runs on any change to this repo
+name: Build stock Jami Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      jami_ref:
+        description: 'Jami git ref (branch, tag, or commit SHA)'
+        required: false
+        default: 'master'
+
+env:
+  # Versions matching Jami's own Dockerfile (docker/Dockerfile in upstream).
+  # Bump these if Jami upstream bumps them — re-check their Dockerfile.
+  NDK_VERSION: '29.0.14206865'
+  CMAKE_VERSION: '4.1.2'
+  BUILD_TOOLS_VERSION: '36.1.0'
+  ANDROID_API_LEVEL: '36'
+  SWIG_VERSION: '4.2.1'
+  # The single ABI we need for Davy's two phones. Same restriction as local
+  # build — keep this single-ABI for speed unless explicitly asked.
+  TARGET_ABI: 'arm64-v8a'
+  # Jami ref to build. Overridden by workflow_dispatch input if provided.
+  JAMI_REF_DEFAULT: 'master'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout jami-build-runner (this repo)
+        uses: actions/checkout@v4
+
+      - name: Set Jami ref from input or default
+        id: ref
+        run: |
+          REF="${{ inputs.jami_ref }}"
+          if [ -z "$REF" ]; then REF="${JAMI_REF_DEFAULT}"; fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "Will build Jami ref: $REF"
+
+      # ---------------------------------------------------------------
+      # 1. Linux toolchain (Jami's docker/Dockerfile is the source of truth
+      #    for this list — keep in sync with whatever they actually use).
+      # ---------------------------------------------------------------
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            asciidoc \
+            autoconf \
+            autogen \
+            automake \
+            autopoint \
+            bc \
+            bison \
+            build-essential \
+            bzip2 \
+            cmake \
+            curl \
+            doxygen \
+            gettext \
+            git \
+            libpcre2-dev \
+            libpcre3 \
+            libpcre3-dev \
+            libtool \
+            locales \
+            m4 \
+            nasm \
+            ninja-build \
+            pkg-config \
+            python-is-python3 \
+            ruby \
+            ruby-dev \
+            ssh \
+            texinfo \
+            unzip \
+            yasm \
+            zip
+          sudo locale-gen en_US.UTF-8
+          sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
+      # ---------------------------------------------------------------
+      # 2. SWIG >= 4.2 from source. Ubuntu 24.04 packages an older SWIG;
+      #    Jami's hard requirement (per their README + the failure we hit
+      #    locally) is >= 4.2.
+      # ---------------------------------------------------------------
+      - name: Cache SWIG build
+        id: cache-swig
+        uses: actions/cache@v4
+        with:
+          path: /opt/swig
+          key: swig-${{ env.SWIG_VERSION }}-ubuntu-24.04
+
+      - name: Build & install SWIG ${{ env.SWIG_VERSION }} from source
+        if: steps.cache-swig.outputs.cache-hit != 'true'
+        run: |
+          wget -O /tmp/swig.tar.gz \
+            https://github.com/swig/swig/archive/v${SWIG_VERSION}.tar.gz
+          sudo tar xzf /tmp/swig.tar.gz -C /opt
+          sudo mv /opt/swig-${SWIG_VERSION} /opt/swig
+          cd /opt/swig
+          sudo ./autogen.sh
+          sudo ./configure --prefix=/opt/swig/install
+          sudo make -j$(nproc)
+          sudo make install
+
+      - name: Add SWIG to PATH
+        run: |
+          echo "/opt/swig/install/bin" >> $GITHUB_PATH
+          /opt/swig/install/bin/swig -version
+
+      # ---------------------------------------------------------------
+      # 3. JDK 17 — AGP 9.1 requirement.
+      # ---------------------------------------------------------------
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # ---------------------------------------------------------------
+      # 4. Android SDK + NDK + CMake (versions pinned to Jami's Dockerfile).
+      # ---------------------------------------------------------------
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platforms;android-${{ env.ANDROID_API_LEVEL }}
+            build-tools;${{ env.BUILD_TOOLS_VERSION }}
+            ndk;${{ env.NDK_VERSION }}
+            cmake;${{ env.CMAKE_VERSION }}
+
+      - name: Export Android env
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/${NDK_VERSION}" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/${NDK_VERSION}" >> $GITHUB_ENV
+
+      # ---------------------------------------------------------------
+      # 5. Clone Jami at the requested ref.
+      # ---------------------------------------------------------------
+      - name: Clone Jami
+        run: |
+          git clone --recursive https://review.jami.net/jami-client-android
+          cd jami-client-android
+          git checkout ${{ steps.ref.outputs.ref }}
+          git submodule update --init --recursive
+          echo "Jami commit: $(git rev-parse HEAD)"
+          echo "Daemon commit: $(cd daemon && git rev-parse HEAD)"
+
+      # ---------------------------------------------------------------
+      # 6. Apply the three patches encoding what we discovered locally.
+      # ---------------------------------------------------------------
+      - name: Apply patches
+        working-directory: jami-client-android
+        run: |
+          for p in ../patches/01-gradle-wrapper-stable.patch \
+                   ../patches/02-make-swig-module-flag.patch; do
+            echo "=== Applying $p ==="
+            patch -p1 < "$p"
+          done
+
+      # ---------------------------------------------------------------
+      # 7. Build Jami's daemon-tools prefix (local m4/autoconf/automake/
+      #    libtool/pkg-config). Serial — paralleled make can race on
+      #    /tmp temp files for nested configure invocations.
+      # ---------------------------------------------------------------
+      - name: Bootstrap Jami daemon tools
+        working-directory: jami-client-android/daemon/extras/tools
+        run: |
+          ./bootstrap
+          # Two passes: first builds m4 + pkg-config; second sees them on
+          # PATH and finishes autoconf/automake/libtool.
+          make -j 1
+          export PATH="$(pwd)/build/bin:$PATH"
+          make -j 1
+          echo "$(pwd)/build/bin" >> $GITHUB_PATH
+
+      # ---------------------------------------------------------------
+      # 8. Pre-build yaml-cpp — Jami's gradle dependency graph for
+      #    Android doesn't auto-trigger this contrib, but daemon's
+      #    CMakeLists.txt:637 does `find_package(yaml-cpp ...REQUIRED)`.
+      # ---------------------------------------------------------------
+      - name: Pre-build yaml-cpp contrib
+        working-directory: jami-client-android
+        run: |
+          # Ensure the build dir Jami uses exists (it gets created by
+          # configureCMakeDebug, but we want it before the main build).
+          export ANDROID_ABI=${TARGET_ABI}
+          ../patches/03-yaml-cpp-prebuild.sh
+
+      # ---------------------------------------------------------------
+      # 9. Run SWIG/JNI generation up-front so the Kotlin compile of
+      #    libjamiclient doesn't race against the C++ build's SWIG step.
+      # ---------------------------------------------------------------
+      - name: Pre-generate SWIG JNI bindings
+        working-directory: jami-client-android/daemon/bin/jni
+        env:
+          PACKAGEDIR: ${{ github.workspace }}/jami-client-android/jami-android/libjamiclient/src/main/java
+        run: |
+          ./make-swig.sh
+
+      # ---------------------------------------------------------------
+      # 10. Gradle cache — speeds up subsequent runs from ~50min to ~10min.
+      # ---------------------------------------------------------------
+      - name: Cache Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      # ---------------------------------------------------------------
+      # 11. The actual APK build.
+      # --no-daemon: container is throwaway, no point in daemon overhead.
+      # --max-workers=2: conservative; runner has 4 cores, prevents OOM
+      #                  from 8 parallel kapt/AAPT processes.
+      # ---------------------------------------------------------------
+      - name: Build APK
+        working-directory: jami-client-android/jami-android
+        run: |
+          ./gradlew assembleDebug \
+            -Parchs=${TARGET_ABI} \
+            --no-daemon \
+            --max-workers=2 \
+            --stacktrace \
+            --info \
+          | tee gradle-build.log
+
+      # ---------------------------------------------------------------
+      # 12. Locate the APK and upload as a workflow artifact.
+      # ---------------------------------------------------------------
+      - name: Find and verify APK
+        id: apk
+        working-directory: jami-client-android/jami-android
+        run: |
+          APK=$(find app/build/outputs/apk -name "*.apk" -type f | head -1)
+          if [ -z "$APK" ]; then
+            echo "::error::No APK produced. See gradle-build.log."
+            exit 1
+          fi
+          echo "Found APK: $APK"
+          ls -la "$APK"
+          echo "apk_path=jami-client-android/jami-android/$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jami-stock-arm64-debug.apk
+          path: ${{ steps.apk.outputs.apk_path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gradle-build.log
+          path: jami-client-android/jami-android/gradle-build.log
+          retention-days: 7

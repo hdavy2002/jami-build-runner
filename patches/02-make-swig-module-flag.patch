@@ -1,0 +1,37 @@
+From: Cloud-build patches for jami-client-android
+Subject: Add explicit -module JamiService to make-swig.sh
+
+Jami's jni_interface.i declares
+  %module (directors="1") JamiService
+on line 19. SWIG 4.4.1 (current brew) and Jami's own build-from-source
+SWIG 4.2.1 both fail to parse the parenthesized-attribute form when
+invoked without an explicit -module flag — they emit a stderr warning
+"No module name specified using %module or -module." then silently exit
+with code 1 after "Generating wrappers...", before the script's
+post-processing steps (jamiservice_loader.c generation, append to
+jami_wrapper.cpp) can run.
+
+The script has `set -e`, so the silent exit-1 from SWIG kills the
+script with no further output — the symptom is a hung build with no
+error message.
+
+Adding `-module JamiService` makes SWIG happy regardless of the .i
+file's %module directive form. The Java -package, output paths, and
+all other behavior are unchanged.
+---
+ daemon/bin/jni/make-swig.sh | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/daemon/bin/jni/make-swig.sh b/daemon/bin/jni/make-swig.sh
+index 0000000..0000000 100755
+--- a/daemon/bin/jni/make-swig.sh
++++ b/daemon/bin/jni/make-swig.sh
+@@ -41,7 +41,7 @@ PACKAGE_PATH="$PACKAGEDIR/${PACKAGE//.//}"
+ mkdir -p $PACKAGE_PATH
+
+ echo "Generating jami_wrapper.cpp and java bindings to $PACKAGE_PATH"
+-swig -v -c++ -java \
++swig -v -c++ -java -module JamiService \
+ -package $PACKAGE \
+ -outdir $PACKAGE_PATH \
+ -o $JNIDIR/jami_wrapper.cpp $JNIDIR/jni_interface.i

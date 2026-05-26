@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# JetBrains / VSCode (in case anyone opens this in an IDE)
+.idea/
+.vscode/
+
+# Local clones of Jami (the workflow does this in CI; if you ever
+# `git clone --recursive https://review.jami.net/jami-client-android`
+# from this repo for debugging, ignore it)
+jami-client-android/
+
+# Logs and build outputs (only relevant if someone runs the workflow
+# locally with `act` or similar)
+*.log
+*.apk
+build/
+.gradle/

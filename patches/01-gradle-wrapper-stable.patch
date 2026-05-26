@@ -1,0 +1,31 @@
+From: Cloud-build patches for jami-client-android
+Subject: Downgrade Gradle wrapper from 9.4.0-rc-1 to 9.3.1 stable
+
+Jami upstream pins gradle-9.4.0-rc-1 in gradle-wrapper.properties. That
+is a Gradle release candidate, not a stable Gradle release. We hit a
+worker-pool deadlock in AGP packaging traced to
+DefaultBuildControllers.awaitCompletion — a known class of bug in Gradle
+pre-release builds.
+
+9.3.1 is the minimum Gradle version that AGP 9.1.0 accepts; AGP's own
+preflight check refuses to run on 9.1.0 or earlier with this exact
+message:
+
+  Minimum supported Gradle version is 9.3.1. Current version is 9.1.0.
+
+So 9.3.1 is the safe stable target.
+---
+ jami-android/gradle/wrapper/gradle-wrapper.properties | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/jami-android/gradle/wrapper/gradle-wrapper.properties b/jami-android/gradle/wrapper/gradle-wrapper.properties
+index 0000000..0000000 100644
+--- a/jami-android/gradle/wrapper/gradle-wrapper.properties
++++ b/jami-android/gradle/wrapper/gradle-wrapper.properties
+@@ -1,4 +1,4 @@
+ distributionBase=GRADLE_USER_HOME
+ distributionPath=wrapper/dists
+-distributionUrl=https\://services.gradle.org/distributions/gradle-9.4.0-rc-1-bin.zip
++distributionUrl=https\://services.gradle.org/distributions/gradle-9.3.1-bin.zip
+ zipStoreBase=GRADLE_USER_HOME
+ zipStorePath=wrapper/dists
