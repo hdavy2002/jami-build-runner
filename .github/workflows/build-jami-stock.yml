@@ -174,16 +174,38 @@ jobs:
           echo "Daemon commit: $(cd daemon && git rev-parse HEAD)"
 
       # ---------------------------------------------------------------
-      # 6. Apply the three patches encoding what we discovered locally.
+      # 6. Apply the two mechanical edits encoding what we discovered
+      #    locally. Done inline with sed (the original .patch files in
+      #    patches/ are kept for documentation but git-format placeholder
+      #    hashes make them awkward for `patch -p1` — sed is more robust
+      #    and trivially auditable here).
       # ---------------------------------------------------------------
-      - name: Apply patches
+      - name: Patch: downgrade Gradle wrapper to 9.3.1 stable
         working-directory: jami-client-android
         run: |
-          for p in ../patches/01-gradle-wrapper-stable.patch \
-                   ../patches/02-make-swig-module-flag.patch; do
-            echo "=== Applying $p ==="
-            patch -p1 < "$p"
-          done
+          PROP=jami-android/gradle/wrapper/gradle-wrapper.properties
+          BEFORE=$(grep distributionUrl "$PROP")
+          sed -i 's|gradle-9.4.0-rc-1-bin\.zip|gradle-9.3.1-bin.zip|' "$PROP"
+          AFTER=$(grep distributionUrl "$PROP")
+          echo "Before: $BEFORE"
+          echo "After:  $AFTER"
+          # Sanity: ensure the substitution actually happened (no rc-1 left)
+          if grep -q 'rc-1' "$PROP"; then
+            echo "::error::Gradle wrapper substitution failed — rc-1 still present"
+            exit 1
+          fi
+
+      - name: Patch: add -module JamiService to make-swig.sh
+        working-directory: jami-client-android
+        run: |
+          SCRIPT=daemon/bin/jni/make-swig.sh
+          if grep -q -- '-module JamiService' "$SCRIPT"; then
+            echo "Patch already applied — skipping (idempotent)."
+          else
+            sed -i 's|^swig -v -c++ -java \\$|swig -v -c++ -java -module JamiService \\|' "$SCRIPT"
+            grep -n -- '-module JamiService' "$SCRIPT" \
+              || { echo "::error::swig -module substitution failed"; exit 1; }
+          fi
 
       # ---------------------------------------------------------------
       # 7. Build Jami's daemon-tools prefix (local m4/autoconf/automake/
