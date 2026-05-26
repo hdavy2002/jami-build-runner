@@ -133,15 +133,26 @@ jobs:
 
       # ---------------------------------------------------------------
       # 4. Android SDK + NDK + CMake (versions pinned to Jami's Dockerfile).
+      #
+      # NOTE: android-actions/setup-android@v3's `packages:` input does
+      # NOT split on newlines as one would expect — it passes the raw
+      # multi-line string to sdkmanager as one literal argument, which
+      # fails. So we install the base SDK with the action and then call
+      # sdkmanager directly with one package per invocation.
       # ---------------------------------------------------------------
-      - name: Set up Android SDK
+      - name: Set up Android SDK (base only)
         uses: android-actions/setup-android@v3
         with:
-          packages: |
-            platforms;android-${{ env.ANDROID_API_LEVEL }}
-            build-tools;${{ env.BUILD_TOOLS_VERSION }}
-            ndk;${{ env.NDK_VERSION }}
-            cmake;${{ env.CMAKE_VERSION }}
+          packages: 'tools'   # minimal valid input; we install real pkgs below
+
+      - name: Install Android SDK packages individually
+        run: |
+          set -e
+          yes Y | sdkmanager --licenses > /dev/null
+          sdkmanager "platforms;android-${ANDROID_API_LEVEL}"
+          sdkmanager "build-tools;${BUILD_TOOLS_VERSION}"
+          sdkmanager "ndk;${NDK_VERSION}"
+          sdkmanager "cmake;${CMAKE_VERSION}"
 
       - name: Export Android env
         run: |
