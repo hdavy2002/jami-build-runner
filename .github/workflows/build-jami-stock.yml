@@ -224,21 +224,10 @@ jobs:
           echo "$(pwd)/build/bin" >> $GITHUB_PATH
 
       # ---------------------------------------------------------------
-      # 8. Pre-build yaml-cpp — Jami's gradle dependency graph for
-      #    Android doesn't auto-trigger this contrib, but daemon's
-      #    CMakeLists.txt:637 does `find_package(yaml-cpp ...REQUIRED)`.
-      # ---------------------------------------------------------------
-      - name: Pre-build yaml-cpp contrib
-        working-directory: jami-client-android
-        run: |
-          # Ensure the build dir Jami uses exists (it gets created by
-          # configureCMakeDebug, but we want it before the main build).
-          export ANDROID_ABI=${TARGET_ABI}
-          ../patches/03-yaml-cpp-prebuild.sh
-
-      # ---------------------------------------------------------------
-      # 9. Run SWIG/JNI generation up-front so the Kotlin compile of
-      #    libjamiclient doesn't race against the C++ build's SWIG step.
+      # 8. Pre-generate SWIG/JNI bindings — Jami's gradle invocation
+      #    doesn't always run make-swig.sh early enough for libjamiclient's
+      #    Kotlin compile (it expects net.jami.daemon.JamiService et al
+      #    to exist before its first parse pass).
       # ---------------------------------------------------------------
       - name: Pre-generate SWIG JNI bindings
         working-directory: jami-client-android/daemon/bin/jni
@@ -248,18 +237,62 @@ jobs:
           ./make-swig.sh
 
       # ---------------------------------------------------------------
-      # 10. Gradle cache — speeds up subsequent runs from ~50min to ~10min.
+      # 9. Gradle cache — speeds up subsequent runs from ~50min to ~10min.
       # ---------------------------------------------------------------
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v3
 
       # ---------------------------------------------------------------
-      # 11. The actual APK build.
+      # 10. First gradle pass — EXPECTED TO FAIL at yaml-cpp find_package.
+      #     The side effect we want is that this pass runs Jami's
+      #     contrib bootstrap, which creates
+      #     daemon/contrib/build-aarch64-linux-android/Makefile —
+      #     after which we can `make .yaml-cpp` ourselves.
+      #
+      #     `continue-on-error: true` means a failure here doesn't fail
+      #     the workflow — step 11 then verifies the contrib dir got made.
+      # ---------------------------------------------------------------
+      - name: First gradle pass to bootstrap contrib dir (expected to fail at yaml-cpp)
+        id: first_pass
+        continue-on-error: true
+        working-directory: jami-client-android/jami-android
+        run: |
+          ./gradlew assembleDebug \
+            -Parchs=${TARGET_ABI} \
+            --no-daemon \
+            --max-workers=2 \
+          2>&1 | tee gradle-first-pass.log || true
+          # Always exit 0 from this step; we check the artifact in next step.
+          true
+
+      # ---------------------------------------------------------------
+      # 11. Build yaml-cpp manually now that contrib dir exists.
+      # ---------------------------------------------------------------
+      - name: Build yaml-cpp contrib explicitly
+        working-directory: jami-client-android/daemon/contrib
+        run: |
+          BUILD_DIR=build-aarch64-linux-android
+          if [ ! -d "$BUILD_DIR" ]; then
+            echo "::error::Expected $BUILD_DIR to exist after first gradle pass — gradle didn't reach contrib bootstrap. See gradle-first-pass.log."
+            exit 1
+          fi
+          cd "$BUILD_DIR"
+          # Two passes for safety: the Makefile's contrib targets are
+          # idempotent so this won't redo already-built ones.
+          make .yaml-cpp
+          # Sanity: cmake config file find_package wants
+          test -f "../aarch64-linux-android/lib/cmake/yaml-cpp/yaml-cpp-config.cmake" \
+            || { echo "::error::yaml-cpp-config.cmake not at expected location"; exit 1; }
+          echo "yaml-cpp ready."
+
+      # ---------------------------------------------------------------
+      # 12. Second gradle pass — the REAL build. yaml-cpp is now present,
+      #     contrib bootstrap is cached, gradle picks up where it left off.
       # --no-daemon: container is throwaway, no point in daemon overhead.
       # --max-workers=2: conservative; runner has 4 cores, prevents OOM
       #                  from 8 parallel kapt/AAPT processes.
       # ---------------------------------------------------------------
-      - name: Build APK
+      - name: Build APK (real pass)
         working-directory: jami-client-android/jami-android
         run: |
           ./gradlew assembleDebug \
@@ -267,8 +300,7 @@ jobs:
             --no-daemon \
             --max-workers=2 \
             --stacktrace \
-            --info \
-          | tee gradle-build.log
+          2>&1 | tee gradle-build.log
 
       # ---------------------------------------------------------------
       # 12. Locate the APK and upload as a workflow artifact.
