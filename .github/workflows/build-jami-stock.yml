@@ -207,6 +207,20 @@ jobs:
               || { echo "::error::swig -module substitution failed"; exit 1; }
           fi
 
+      - name: "Patch: rename values-nn_NO → values-nn-rNO (AGP 9 strict format)"
+        working-directory: jami-client-android
+        run: |
+          OLD=jami-android/app/src/main/res/values-nn_NO
+          NEW=jami-android/app/src/main/res/values-nn-rNO
+          if [ -d "$OLD" ]; then
+            mv "$OLD" "$NEW"
+            echo "Renamed $(basename $OLD) -> $(basename $NEW)"
+          elif [ -d "$NEW" ]; then
+            echo "Already renamed (NEW exists)."
+          else
+            echo "Neither old nor new found — Jami may have upstreamed the fix. Continuing."
+          fi
+
       # ---------------------------------------------------------------
       # 7. Build Jami's daemon-tools prefix (local m4/autoconf/automake/
       #    libtool/pkg-config). Serial — paralleled make can race on
@@ -257,12 +271,12 @@ jobs:
         continue-on-error: true
         working-directory: jami-client-android/jami-android
         run: |
+          # No pipefail here — we EXPECT this to fail, just want the log
           ./gradlew assembleDebug \
             -Parchs=${TARGET_ABI} \
             --no-daemon \
             --max-workers=2 \
           2>&1 | tee gradle-first-pass.log || true
-          # Always exit 0 from this step; we check the artifact in next step.
           true
 
       # ---------------------------------------------------------------
@@ -294,7 +308,9 @@ jobs:
       # ---------------------------------------------------------------
       - name: Build APK (real pass)
         working-directory: jami-client-android/jami-android
+        shell: bash
         run: |
+          set -o pipefail   # so gradle failure isn't masked by `tee`
           ./gradlew assembleDebug \
             -Parchs=${TARGET_ABI} \
             --no-daemon \
