@@ -33,6 +33,9 @@ env:
   # Jami ref to build. Overridden by workflow_dispatch input if provided.
   JAMI_REF_DEFAULT: 'master'
 
+permissions:
+  contents: write   # needed to publish a GitHub Release on successful main builds
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -349,3 +352,53 @@ jobs:
           name: gradle-build.log
           path: jami-client-android/jami-android/gradle-build.log
           retention-days: 7
+
+      # ---------------------------------------------------------------
+      # 13. Publish as GitHub Release on successful main-branch build.
+      #     Gives a direct phone-downloadable URL like
+      #     https://github.com/<org>/<repo>/releases/download/<tag>/jami-stock-arm64-debug.apk
+      #     The artifact-style download from Actions tab requires a GitHub
+      #     login; releases are public, easier to install on phones.
+      # ---------------------------------------------------------------
+      - name: Stage APK for release with stable filename
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          STAGED=/tmp/jami-stock-arm64-debug.apk
+          cp "${{ steps.apk.outputs.apk_path }}" "$STAGED"
+          ls -la "$STAGED"
+
+      - name: Get Jami daemon commit short SHA for release tag
+        id: jami_sha
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        working-directory: jami-client-android/daemon
+        run: |
+          SHORT=$(git rev-parse --short HEAD)
+          echo "short=$SHORT" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}-jami-${{ steps.jami_sha.outputs.short }}
+          name: "Build #${{ github.run_number }} — stock Jami arm64-v8a debug (daemon ${{ steps.jami_sha.outputs.short }})"
+          body: |
+            Stock Jami Android **debug** APK built from upstream
+            `jami-client-android` master (daemon commit `${{ steps.jami_sha.outputs.short }}`)
+            with the patches in this repo applied.
+
+            Architecture: arm64-v8a only.
+
+            Built by [GitHub Actions run #${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+            **Install on phone:** open this page in your phone's browser,
+            tap the APK file to download, then tap to install (Android may
+            ask you to enable "Install unknown apps" for the browser the
+            first time).
+
+            Not affiliated with the Jami project. Source code:
+            https://review.jami.net/jami-client-android
+          files: /tmp/jami-stock-arm64-debug.apk
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
